@@ -1,0 +1,865 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>SkillBridge - Examiner Portal</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="portal">
+
+    <aside class="sidebar">
+
+        <div class="brand">
+            SkillBridge
+        </div>
+
+        <nav>
+            <button onclick="showSection('dashboard')">
+                🏠 Dashboard
+            </button>
+
+            <button onclick="showSection('create')">
+                ➕ Create Exam
+            </button>
+
+            <button onclick="showSection('questionBanks')">
+        📚 Question Banks
+    </button>
+
+            <button onclick="showSection('exams')">
+                📋 My Exams
+            </button>
+
+            <button onclick="showSection('attempts')">
+                👨‍🎓 Student Attempts
+            </button>
+
+            <button onclick="showSection('results')">
+                📊 Results
+            </button>
+
+            <button onclick="showSection('recordings')">
+                🎥 Recordings
+            </button>
+        </nav>
+
+        <button class="logout" onclick="logout()">
+            🚪 Logout
+        </button>
+
+    </aside>
+
+
+    <main class="main-content">
+
+        <header>
+            <h1>Examiner Portal</h1>
+            <p>Welcome, Examiner</p>
+        </header>
+
+
+        <!-- DASHBOARD -->
+
+        <!-- DASHBOARD -->
+
+<section id="dashboard" class="section dashboard-section">
+
+    <div class="dashboard-header">
+        <div>
+            <h2>Dashboard</h2>
+            <p>Manage your examinations and monitor student activity.</p>
+        </div>
+
+        <button class="primary-action" onclick="showSection('create')">
+            ➕ Create New Exam
+        </button>
+    </div>
+
+    <div class="stats-grid">
+
+        <div class="stat-card purple">
+            <div class="stat-icon">📋</div>
+            <div>
+                <span>My Exams</span>
+                <h2>0</h2>
+            </div>
+        </div>
+
+        <div class="stat-card blue">
+            <div class="stat-icon">👨‍🎓</div>
+            <div>
+                <span>Student Attempts</span>
+                <h2>0</h2>
+            </div>
+        </div>
+
+        <div class="stat-card green">
+            <div class="stat-icon">📊</div>
+            <div>
+                <span>Results</span>
+                <h2>0</h2>
+            </div>
+        </div>
+
+        <div class="stat-card orange">
+            <div class="stat-icon">🎥</div>
+            <div>
+                <span>Recordings</span>
+                <h2>0</h2>
+            </div>
+        </div>
+
+    </div>
+
+    <div class="dashboard-panel">
+
+        <div class="panel-title">
+            <h3>Quick Actions</h3>
+        </div>
+
+        <div class="quick-actions">
+
+            <button onclick="showSection('create')">
+                ➕ Create Exam
+            </button>
+
+            <button onclick="showSection('exams')">
+                📋 View My Exams
+            </button>
+
+            <button onclick="showSection('attempts')">
+                👨‍🎓 Student Attempts
+            </button>
+
+            <button onclick="showSection('results')">
+                📊 View Results
+            </button>
+
+        </div>
+
+    </div>
+
+</section>
+
+
+        <!-- CREATE EXAM -->
+
+<section id="create" class="section" style="display:none;">
+
+    <div class="dashboard-header">
+        <div>
+            <h2>Create Examination</h2>
+            <p>Create an examination using one of your question banks.</p>
+        </div>
+    </div>
+
+    <div class="dashboard-panel">
+
+        <h3>Exam Details</h3>
+
+        <input
+            id="title"
+            placeholder="Exam title"
+        >
+
+        <br><br>
+
+        <label>
+            Question Bank
+        </label>
+
+        <br>
+
+        <select id="questionBankSelect">
+            <option value="">
+                Loading question banks...
+            </option>
+        </select>
+
+        <br><br>
+
+        <label>
+            Number of Questions
+        </label>
+
+        <br>
+
+        <input
+            id="questionCount"
+            type="number"
+            min="1"
+            placeholder="Number of questions"
+        >
+
+        <br><br>
+
+        <label>
+            Duration
+        </label>
+
+        <br>
+
+        <input
+            id="duration"
+            type="number"
+            min="1"
+            placeholder="Duration in minutes"
+        >
+
+        <br><br>
+
+        <button onclick="createExam()">
+            ➕ Create Exam
+        </button>
+
+        <h3 id="result"></h3>
+
+    </div>
+
+</section>
+
+<!-- QUESTION BANKS -->
+
+<section id="questionBanks" class="section" style="display:none;">
+
+    <div class="dashboard-header">
+        <div>
+            <h2>Question Banks</h2>
+            <p>Upload and manage your question banks.</p>
+        </div>
+    </div>
+
+    <div class="dashboard-panel">
+
+        <h3>Upload Question Bank</h3>
+
+        <p>
+            Upload a <strong>.txt</strong> file containing your questions.
+        </p>
+
+        <input
+            type="file"
+            id="questionBankFile"
+            accept=".txt"
+        >
+
+        <br><br>
+
+        <button onclick="uploadQuestionBank()">
+            📤 Upload Question Bank
+        </button>
+
+        <p id="questionBankMessage"></p>
+
+    </div>
+
+    <br>
+
+    <div class="dashboard-panel">
+
+        <h3>My Question Banks</h3>
+
+        <div id="questionBankList">
+            <p>Loading question banks...</p>
+        </div>
+
+    </div>
+
+</section>
+       <!-- MY EXAMS -->
+
+<section id="exams" class="section" style="display:none;">
+
+    <div class="dashboard-header">
+        <div>
+            <h2>My Exams</h2>
+            <p>View and manage examinations you have created.</p>
+        </div>
+
+        <button class="primary-action" onclick="showSection('create')">
+            ➕ Create New Exam
+        </button>
+    </div>
+
+    <div class="exam-list">
+
+        <div class="exam-card">
+
+            <div class="exam-info">
+                <div class="exam-icon">📝</div>
+
+                <div>
+                    <h3>Mathematics</h3>
+                    <p>Exam Code: <strong>vvv37y</strong></p>
+                </div>
+            </div>
+
+            <div class="exam-details">
+                <div>
+                    <span>Questions</span>
+                    <strong>1</strong>
+                </div>
+
+                <div>
+                    <span>Duration</span>
+                    <strong>1 min</strong>
+                </div>
+
+                <div>
+                    <span>Status</span>
+                    <strong class="status-active">Active</strong>
+                </div>
+            </div>
+
+            <div class="exam-actions">
+                <button>👁 View</button>
+                <button>✏️ Edit</button>
+                <button class="danger-button">🗑 Delete</button>
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+
+        <!-- ATTEMPTS -->
+
+<section id="attempts" class="section" style="display:none;">
+
+    <div class="dashboard-header">
+        <div>
+            <h2>Student Attempts</h2>
+            <p>Monitor students who have attempted your examinations.</p>
+        </div>
+    </div>
+
+    <div class="attempt-table">
+
+        <div class="attempt-header">
+            <span>Student</span>
+            <span>Exam</span>
+            <span>Submitted</span>
+            <span>Status</span>
+            <span>Action</span>
+        </div>
+
+        <div class="attempt-row">
+            <span class="student-name">👨‍🎓 No attempts yet</span>
+            <span>—</span>
+            <span>—</span>
+            <span class="status-pending">Waiting</span>
+            <button>View</button>
+        </div>
+
+    </div>
+
+</section>
+
+
+        <!-- RESULTS -->
+
+<section id="results" class="section" style="display:none;">
+
+    <div class="dashboard-header">
+        <div>
+            <h2>Results</h2>
+            <p>View and manage student examination results.</p>
+        </div>
+    </div>
+
+    <div class="results-summary">
+
+        <div class="result-box purple-box">
+            <span>Total Results</span>
+            <strong>0</strong>
+        </div>
+
+        <div class="result-box green-box">
+            <span>Passed</span>
+            <strong>0</strong>
+        </div>
+
+        <div class="result-box red-box">
+            <span>Not Passed</span>
+            <strong>0</strong>
+        </div>
+
+    </div>
+
+    <div class="results-table">
+
+        <div class="results-header">
+            <span>Student</span>
+            <span>Exam</span>
+            <span>Score</span>
+            <span>Status</span>
+            <span>Action</span>
+        </div>
+
+        <div class="results-row">
+            <span>👨‍🎓 No results yet</span>
+            <span>—</span>
+            <span>—</span>
+            <span class="status-pending">Waiting</span>
+            <button>View</button>
+        </div>
+
+    </div>
+
+</section>
+
+        <!-- RECORDINGS -->
+
+<section id="recordings" class="section" style="display:none;">
+
+    <div class="dashboard-header">
+        <div>
+            <h2>Recordings</h2>
+            <p>Review recorded examination sessions.</p>
+        </div>
+    </div>
+
+    <div class="recording-list">
+
+        <div class="recording-card">
+
+            <div class="recording-icon">
+                🎥
+            </div>
+
+            <div class="recording-info">
+                <h3>No recordings yet</h3>
+                <p>Student examination recordings will appear here.</p>
+            </div>
+
+            <div class="recording-status">
+                Waiting
+            </div>
+
+        </div>
+
+    </div>
+
+</section>
+
+    </main>
+
+</div>
+
+
+<script>
+
+function showSection(section) {
+
+    document.querySelectorAll(".section").forEach(element => {
+        element.style.display = "none";
+    });
+
+    document.getElementById(section).style.display = "block";
+}
+
+
+let questionNumber = 0;
+
+function addQuestion() {
+
+    questionNumber++;
+
+    const div = document.createElement("div");
+
+    div.className = "question";
+
+    div.innerHTML = `
+        <h3>Question ${questionNumber}</h3>
+
+        <input class="questionText"
+               placeholder="Enter question">
+
+        <input class="optionA"
+               placeholder="Option A">
+
+        <input class="optionB"
+               placeholder="Option B">
+
+        <input class="optionC"
+               placeholder="Option C">
+
+        <input class="optionD"
+               placeholder="Option D">
+
+        <select class="answer">
+            <option value="A">Correct Answer: A</option>
+            <option value="B">Correct Answer: B</option>
+            <option value="C">Correct Answer: C</option>
+            <option value="D">Correct Answer: D</option>
+        </select>
+    `;
+
+    document.getElementById("questions").appendChild(div);
+}
+
+
+async function createExam() {
+
+    const title =
+        document.getElementById("title").value.trim();
+
+    const duration =
+        Number(document.getElementById("duration").value);
+
+    const bankId =
+        document.getElementById("questionBankSelect").value;
+
+    const questionCount =
+        Number(document.getElementById("questionCount").value);
+
+    const result =
+        document.getElementById("result");
+
+
+    if (!title) {
+        alert("Enter an exam title.");
+        return;
+    }
+
+    if (!bankId) {
+        alert("Select a question bank.");
+        return;
+    }
+
+    if (!questionCount || questionCount < 1) {
+        alert("Enter the number of questions.");
+        return;
+    }
+
+    if (!duration || duration < 1) {
+        alert("Enter the exam duration.");
+        return;
+    }
+
+
+    result.textContent =
+        "Creating exam...";
+
+
+    try {
+
+        const response =
+            await fetch("/api/exams", {
+
+                method: "POST",
+
+                headers: {
+                    "Content-Type": "application/json"
+                },
+
+                body: JSON.stringify({
+                    title,
+                    duration,
+                    bankId,
+                    questionCount
+                })
+            });
+
+
+        const data =
+            await response.json();
+
+
+        if (data.success) {
+
+            result.textContent =
+                "Exam created! Exam code: " + data.examId;
+
+        } else {
+
+            result.textContent = "";
+
+            alert(
+                data.error ||
+                "Could not create exam."
+            );
+        }
+
+    } catch (error) {
+
+        console.error(error);
+
+        result.textContent = "";
+
+        alert(
+            "Could not connect to the server."
+        );
+    }
+}
+async function loadQuestionBankOptions() {
+
+    const select =
+        document.getElementById("questionBankSelect");
+
+    try {
+
+        const response =
+            await fetch("/api/question-banks");
+
+        const data =
+            await response.json();
+
+        if (!data.success) {
+
+            select.innerHTML =
+                `<option value="">Could not load question banks</option>`;
+
+            return;
+        }
+
+        if (data.banks.length === 0) {
+
+            select.innerHTML =
+                `<option value="">No question banks available</option>`;
+
+            return;
+        }
+
+        select.innerHTML =
+            `<option value="">Select a question bank</option>`;
+
+        data.banks.forEach(bank => {
+
+            const option =
+                document.createElement("option");
+
+            option.value = bank.id;
+
+            option.textContent =
+                `${bank.name} (${bank.questionCount} questions)`;
+
+            select.appendChild(option);
+
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        select.innerHTML =
+            `<option value="">Could not connect to server</option>`;
+    }
+}
+async function uploadQuestionBank() {
+
+    const fileInput =
+        document.getElementById("questionBankFile");
+
+    const message =
+        document.getElementById("questionBankMessage");
+
+    if (!fileInput.files.length) {
+        message.textContent =
+            "Please select a .txt file.";
+        return;
+    }
+
+    const file = fileInput.files[0];
+
+    if (!file.name.toLowerCase().endsWith(".txt")) {
+        message.textContent =
+            "Only .txt files are allowed.";
+        return;
+    }
+
+    const formData = new FormData();
+
+    formData.append(
+        "questionBank",
+        file
+    );
+
+    message.textContent =
+        "Uploading...";
+
+    try {
+
+        const response = await fetch(
+            "/api/question-banks/upload",
+            {
+                method: "POST",
+                body: formData
+            }
+        );
+
+        const data =
+            await response.json();
+
+        if (data.success) {
+
+            message.textContent =
+                `Uploaded successfully! ${data.questionCount} questions found.`;
+
+            fileInput.value = "";
+
+            loadQuestionBanks();
+
+        } else {
+
+            message.textContent =
+                data.error || "Upload failed.";
+
+        }
+
+    } catch (error) {
+
+        console.error(error);
+
+        message.textContent =
+            "Could not connect to the server.";
+    }
+}
+
+
+async function loadQuestionBanks() {
+
+    const list =
+        document.getElementById("questionBankList");
+
+    try {
+
+        const response =
+            await fetch("/api/question-banks");
+
+        const data =
+            await response.json();
+
+        if (!data.success) {
+
+            list.innerHTML =
+                "<p>Could not load question banks.</p>";
+
+            return;
+        }
+
+        if (data.banks.length === 0) {
+
+            list.innerHTML =
+                "<p>No question banks uploaded yet.</p>";
+
+            return;
+        }
+
+        list.innerHTML = "";
+
+        data.banks.forEach(bank => {
+
+            const card =
+                document.createElement("div");
+
+            card.className = "exam-card";
+
+            card.innerHTML = `
+                <div class="exam-info">
+
+                    <div class="exam-icon">📚</div>
+
+                    <div>
+                        <h3>${bank.name}</h3>
+                        <p>Question Bank</p>
+                    </div>
+
+                </div>
+
+                <div class="exam-actions">
+
+                    <button onclick="viewQuestionBank(${bank.id})">
+                        👁 View
+                    </button>
+
+                    <button
+                        class="danger-button"
+                        onclick="deleteQuestionBank(${bank.id})"
+                    >
+                        🗑 Delete
+                    </button>
+
+                </div>
+            `;
+
+            list.appendChild(card);
+
+        });
+
+    } catch (error) {
+
+        console.error(error);
+
+        list.innerHTML =
+            "<p>Could not connect to the server.</p>";
+    }
+}
+
+
+async function viewQuestionBank(id) {
+
+    const response =
+        await fetch(`/api/question-banks/${id}`);
+
+    const data =
+        await response.json();
+
+    if (!data.success) {
+
+        alert(data.error || "Could not load question bank.");
+
+        return;
+    }
+
+    alert(
+        `${data.bank.name}\n\nQuestions: ${data.bank.questions.length}`
+    );
+}
+
+
+async function deleteQuestionBank(id) {
+
+    if (!confirm("Delete this question bank?")) {
+        return;
+    }
+
+    const response =
+        await fetch(`/api/question-banks/${id}`, {
+            method: "DELETE"
+        });
+
+    const data =
+        await response.json();
+
+    if (data.success) {
+
+        loadQuestionBanks();
+
+    } else {
+
+        alert(data.error || "Could not delete question bank.");
+    }
+}
+
+
+async function logout() {
+
+    await fetch("/api/admin/logout", {
+        method: "POST"
+    });
+
+    window.location.href =
+        "/admin-login.html";
+}
+loadQuestionBankOptions();
+loadQuestionBanks();
+</script>
+
+</body>
+</html>

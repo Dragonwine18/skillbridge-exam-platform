@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SkillBridge - Student Portal</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="portal">
+
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+
+        <div class="brand">
+            SkillBridge
+        </div>
+
+        <nav>
+            <button onclick="showSection('dashboard')">
+                🏠 Dashboard
+            </button>
+
+            <button onclick="showSection('available')">
+                📝 Available Exams
+            </button>
+
+            <button onclick="showSection('upcoming')">
+                📅 Upcoming Exams
+            </button>
+
+            <button onclick="showSection('results')">
+                📊 Results
+            </button>
+
+            <button onclick="showSection('profile')">
+                👤 Profile
+            </button>
+        </nav>
+
+        <button class="logout" onclick="logout()">
+            🚪 Logout
+        </button>
+
+    </aside>
+
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content">
+
+        <header>
+            <h1>Student Portal</h1>
+            <p>Welcome back, Student</p>
+        </header>
+
+
+        <!-- DASHBOARD -->
+        <section id="dashboard" class="dashboard-section">
+
+            <div class="dashboard-header">
+
+                <div>
+                    <h2>Dashboard</h2>
+                    <p>Here's your examination overview.</p>
+                </div>
+
+                <button class="primary-action"
+                        onclick="showSection('available')">
+                    📝 View Exams
+                </button>
+
+            </div>
+
+
+            <div class="stats-grid">
+
+                <div class="stat-card purple">
+
+                    <div class="stat-icon">
+                        📝
+                    </div>
+
+                    <div>
+                        <span>Available Exams</span>
+                        <h2 id="availableCount">0</h2>
+                    </div>
+
+                </div>
+
+
+                <div class="stat-card blue">
+
+                    <div class="stat-icon">
+                        📅
+                    </div>
+
+                    <div>
+                        <span>Upcoming Exams</span>
+                        <h2 id="upcomingCount">0</h2>
+                    </div>
+
+                </div>
+
+
+                <div class="stat-card green">
+
+                    <div class="stat-icon">
+                        🏆
+                    </div>
+
+                    <div>
+                        <span>Completed Exams</span>
+                        <h2 id="completedCount">0</h2>
+                    </div>
+
+                </div>
+
+
+                <div class="stat-card orange">
+
+                    <div class="stat-icon">
+                        📊
+                    </div>
+
+                    <div>
+                        <span>Results</span>
+                        <h2 id="resultsCount">0</h2>
+                    </div>
+
+                </div>
+
+            </div>
+
+
+            <div class="dashboard-panel">
+
+                <div class="panel-title">
+                    <h3>Quick Actions</h3>
+                </div>
+
+                <div class="quick-actions">
+
+                    <button onclick="showSection('available')">
+                        📝 Available Exams
+                    </button>
+
+                    <button onclick="showSection('results')">
+                        📊 View Results
+                    </button>
+
+                    <button onclick="showSection('profile')">
+                        👤 My Profile
+                    </button>
+
+                </div>
+
+            </div>
+
+        </section>
+
+
+        <!-- AVAILABLE EXAMS -->
+        <section id="available"
+                 class="section"
+                 style="display:none;">
+
+            <div class="dashboard-header">
+
+                <div>
+                    <h2>Available Exams</h2>
+                    <p>Examinations currently available for you.</p>
+                </div>
+
+            </div>
+
+            <div id="availableExams" class="exam-list">
+                Loading exams...
+            </div>
+
+        </section>
+
+
+        <!-- UPCOMING EXAMS -->
+        <section id="upcoming"
+                 class="section"
+                 style="display:none;">
+
+            <div class="dashboard-header">
+
+                <div>
+                    <h2>Upcoming Exams</h2>
+                    <p>Your scheduled examinations.</p>
+                </div>
+
+            </div>
+
+            <div class="dashboard-panel">
+
+                <p>No upcoming exams.</p>
+
+            </div>
+
+        </section>
+
+
+        <!-- RESULTS -->
+        <section id="results"
+                 class="section"
+                 style="display:none;">
+
+            <div class="dashboard-header">
+
+                <div>
+                    <h2>My Results</h2>
+                    <p>View your examination performance.</p>
+                </div>
+
+            </div>
+
+            <div class="dashboard-panel">
+
+                <p>Your results will appear here after completing an exam.</p>
+
+            </div>
+
+        </section>
+
+
+        <!-- PROFILE -->
+        <section id="profile"
+                 class="section"
+                 style="display:none;">
+
+            <div class="dashboard-header">
+
+                <div>
+                    <h2>My Profile</h2>
+                    <p>Manage your SkillBridge profile.</p>
+                </div>
+
+            </div>
+
+            <div class="dashboard-panel">
+
+                <h3>Student Information</h3>
+
+                <p>
+                    <strong>Student ID:</strong>
+                    <span id="studentId">Loading...</span>
+                </p>
+
+                <p>
+                    <strong>Role:</strong>
+                    Student
+                </p>
+
+            </div>
+
+        </section>
+
+    </main>
+
+</div>
+
+
+<script>
+
+function showSection(section) {
+
+    document.querySelectorAll(".section, .dashboard-section")
+        .forEach(element => {
+            element.style.display = "none";
+        });
+
+    document.getElementById(section).style.display = "block";
+}
+
+
+/* LOAD AVAILABLE EXAMS */
+
+async function loadExams() {
+
+    try {
+
+        const response = await fetch("/api/exams");
+
+        const exams = await response.json();
+
+        const container =
+            document.getElementById("availableExams");
+
+        document.getElementById("availableCount")
+            .textContent = exams.length;
+
+        if (exams.length === 0) {
+
+            container.innerHTML =
+                "<p>No exams are currently available.</p>";
+
+            return;
+        }
+
+        container.innerHTML = exams.map(exam => `
+
+            <div class="exam-card">
+
+                <div class="exam-info">
+
+                    <div class="exam-icon">
+                        📝
+                    </div>
+
+                    <div>
+
+                        <h3>${exam.title}</h3>
+
+                        <p>
+                            Examination
+                        </p>
+
+                    </div>
+
+                </div>
+
+
+                <div class="exam-details">
+
+                    <div>
+
+                        <span>Duration</span>
+
+                        <strong>
+                            ${exam.duration} min
+                        </strong>
+
+                    </div>
+
+                    <div>
+
+                        <span>Status</span>
+
+                        <strong class="status-active">
+                            Available
+                        </strong>
+
+                    </div>
+
+                </div>
+
+
+                <div class="exam-actions">
+
+                    <button onclick="startExam('${exam.id}')">
+                        Start Exam
+                    </button>
+
+                </div>
+
+            </div>
+
+        `).join("");
+
+    } catch (error) {
+
+        console.error(error);
+
+        document.getElementById("availableExams")
+            .innerHTML =
+            "<p>Could not load exams.</p>";
+    }
+}
+
+
+/* START EXAM */
+
+function startExam(examId) {
+
+    window.location.href =
+        "/student.html?exam=" + examId;
+}
+
+
+/* LOGOUT */
+
+async function logout() {
+
+    await fetch("/api/admin/logout", {
+        method: "POST"
+    });
+
+    window.location.href =
+        "/admin-login.html";
+}
+
+
+/* INITIAL LOAD */
+
+loadExams();
+
+</script>
+
+</body>
+</html>

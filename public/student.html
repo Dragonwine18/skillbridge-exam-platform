@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Take Exam</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="container">
+
+    <h1>Take Examination</h1>
+
+    <input
+        id="examCode"
+        placeholder="Enter exam code"
+    >
+
+    <input
+        id="studentName"
+        placeholder="Your name"
+    >
+
+    <button onclick="startExam()">
+        Start Exam
+    </button>
+
+    <div id="examArea"></div>
+
+    <video
+        id="camera"
+        autoplay
+        muted
+    ></video>
+
+</div>
+
+
+<script>
+
+let exam = null;
+let stream = null;
+let recorder = null;
+let chunks = [];
+let examActive = false;
+let answers = {};
+
+
+// ===============================
+// START EXAM
+// ===============================
+
+async function startExam() {
+
+    const code =
+        document.getElementById("examCode").value.trim();
+
+    const name =
+        document.getElementById("studentName").value.trim();
+
+
+    if (!code || !name) {
+
+        alert("Enter your name and exam code.");
+
+        return;
+    }
+
+
+    // Get exam from server
+
+    const response =
+        await fetch(`/api/exams/${code}`);
+
+
+    if (!response.ok) {
+
+        alert("Exam not found.");
+
+        return;
+    }
+
+
+    exam = await response.json();
+
+
+    // Ask for camera and microphone
+
+    try {
+
+        stream =
+            await navigator.mediaDevices.getUserMedia({
+
+                video: true,
+                audio: true
+
+            });
+
+
+        document.getElementById("camera")
+            .srcObject = stream;
+
+    }
+
+    catch (error) {
+
+        alert(
+            "Camera and microphone permission are required."
+        );
+
+        return;
+    }
+
+
+    // Start recording
+
+    chunks = [];
+
+    recorder =
+        new MediaRecorder(stream);
+
+
+    recorder.ondataavailable = function(event) {
+
+        if (event.data.size > 0) {
+
+            chunks.push(event.data);
+
+        }
+
+    };
+
+
+    recorder.onstop = async function() {
+
+        const videoBlob =
+            new Blob(chunks, {
+                type: "video/webm"
+            });
+
+
+        await sendAttempt(
+            videoBlob,
+            examActive ? "completed" : "terminated",
+            null
+        );
+
+    };
+
+
+    recorder.start();
+
+
+    examActive = true;
+
+    displayExam();
+
+}
+
+
+// ===============================
+// DISPLAY EXAM
+// ===============================
+
+function displayExam() {
+
+    const area =
+        document.getElementById("examArea");
+
+
+    area.innerHTML = `
+
+        <h2>${exam.title}</h2>
+
+        <p>
+            Duration: ${exam.duration} minutes
+        </p>
+
+        <div id="questions"></div>
+
+        <button onclick="submitExam()">
+            Submit Exam
+        </button>
+
+    `;
+
+
+    const questions =
+        document.getElementById("questions");
+
+
+    exam.questions.forEach(function(q, index) {
+
+        questions.innerHTML += `
+
+            <div class="examQuestion">
+
+                <h3>
+                    ${index + 1}. ${q.question}
+                </h3>
+
+                <label>
+                    <input
+                        type="radio"
+                        name="q${index}"
+                        onchange="saveAnswer(${index}, 'A')"
+                    >
+                    ${q.options.A}
+                </label>
+
+                <label>
+                    <input
+                        type="radio"
+                        name="q${index}"
+                        onchange="saveAnswer(${index}, 'B')"
+                    >
+                    ${q.options.B}
+                </label>
+
+                <label>
+                    <input
+                        type="radio"
+                        name="q${index}"
+                        onchange="saveAnswer(${index}, 'C')"
+                    >
+                    ${q.options.C}
+                </label>
+
+                <label>
+                    <input
+                        type="radio"
+                        name="q${index}"
+                        onchange="saveAnswer(${index}, 'D')"
+                    >
+                    ${q.options.D}
+                </label>
+
+            </div>
+
+        `;
+
+    });
+
+}
+
+
+// ===============================
+// SAVE ANSWER
+// ===============================
+
+function saveAnswer(question, answer) {
+
+    answers[question] = answer;
+
+}
+
+
+// ===============================
+// DETECT TAB OR WINDOW SWITCH
+// ===============================
+
+document.addEventListener(
+    "visibilitychange",
+    function() {
+
+        if (
+            document.hidden &&
+            examActive
+        ) {
+
+            terminateExam("tab_or_window_switch");
+
+        }
+
+    }
+);
+
+
+// Detect browser window losing focus
+
+window.addEventListener(
+    "blur",
+    function() {
+
+        if (examActive) {
+
+            terminateExam("tab_or_window_switch");
+
+        }
+
+    }
+);
+
+
+// ===============================
+// TERMINATE EXAM
+// ===============================
+
+async function terminateExam(reason) {
+
+    if (!examActive) {
+        return;
+    }
+
+
+    examActive = false;
+
+
+    document.getElementById("examArea")
+        .innerHTML = `
+
+            <h1>Exam Terminated</h1>
+
+            <p>
+                The exam was terminated because
+                you left the exam tab.
+            </p>
+
+        `;
+
+
+    if (
+        recorder &&
+        recorder.state !== "inactive"
+    ) {
+
+        // Save reason for upload
+
+        recorder.stop();
+
+        await sendAttemptAfterStop(
+            "terminated",
+            reason
+        );
+
+    }
+
+}
+
+
+// ===============================
+// SUBMIT EXAM
+// ===============================
+
+async function submitExam() {
+
+    if (!examActive) {
+        return;
+    }
+
+
+    examActive = false;
+
+
+    document.getElementById("examArea")
+        .innerHTML = `
+
+            <h1>Exam Submitted</h1>
+
+            <p>
+                Your exam is being saved...
+            </p>
+
+        `;
+
+
+    if (
+        recorder &&
+        recorder.state !== "inactive"
+    ) {
+
+        recorder.stop();
+
+        await sendAttemptAfterStop(
+            "completed",
+            ""
+        );
+
+    }
+
+}
+
+
+// ===============================
+// WAIT FOR RECORDER THEN SEND
+// ===============================
+
+function sendAttemptAfterStop(status, reason) {
+
+    return new Promise(function(resolve) {
+
+        recorder.onstop = async function() {
+
+            const videoBlob =
+                new Blob(chunks, {
+                    type: "video/webm"
+                });
+
+
+            await sendAttempt(
+                videoBlob,
+                status,
+                reason
+            );
+
+
+            resolve();
+
+        };
+
+    });
+
+}
+
+
+// ===============================
+// SEND TO SERVER
+// ===============================
+
+async function sendAttempt(
+    videoBlob,
+    status,
+    reason
+) {
+
+    const form =
+        new FormData();
+
+
+    form.append(
+        "video",
+        videoBlob,
+        "recording.webm"
+    );
+
+
+    form.append(
+        "examId",
+        exam.id
+    );
+
+
+    form.append(
+        "studentName",
+        document.getElementById("studentName").value
+    );
+
+
+    form.append(
+        "answers",
+        JSON.stringify(answers)
+    );
+
+
+    form.append(
+        "status",
+        status
+    );
+
+
+    form.append(
+        "reason",
+        reason || ""
+    );
+
+
+    const response =
+        await fetch(
+            "/api/attempts",
+            {
+                method: "POST",
+                body: form
+            }
+        );
+
+
+    const result =
+        await response.json();
+
+
+    if (result.success) {
+
+        console.log(
+            "Attempt saved:",
+            result.attemptId
+        );
+
+    }
+
+
+    // Stop camera and microphone
+
+    if (stream) {
+
+        stream.getTracks().forEach(
+            track => track.stop()
+        );
+
+    }
+
+}
+
+</script>
+
+</body>
+
+</html>

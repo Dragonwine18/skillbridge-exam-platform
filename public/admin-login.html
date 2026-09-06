@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SkillBridge Login</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+<div class="login-container">
+
+    <div class="logo">
+        <h1>SkillBridge</h1>
+        <p>Examination Portal</p>
+    </div>
+
+    <form id="loginForm">
+
+        <input
+            id="email"
+            type="text"
+            placeholder="Student / Examiner ID"
+            required
+        >
+
+        <input
+            id="password"
+            type="password"
+            placeholder="Password"
+            required
+        >
+
+        <div id="captchaBox" style="display:none;">
+            <p>Enter the text shown:</p>
+
+            <div id="captcha"></div>
+
+            <input
+                id="captchaInput"
+                type="text"
+                placeholder="Enter CAPTCHA"
+            >
+        </div>
+
+        <button type="submit">LOGIN</button>
+
+        <p id="error"></p>
+
+    </form>
+
+</div>
+
+<script>
+let failedAttempts = 0;
+
+document.getElementById("loginForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+
+    const email = document.getElementById("email").value;
+    const password = document.getElementById("password").value;
+
+    const response = await fetch("/api/admin/login", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            email,
+            password
+        })
+    });
+
+    const data = await response.json();
+
+   if (data.success) {
+
+    if (data.role === "student") {
+        window.location.href = "/student-portal.html";
+    } else if (data.role === "examiner") {
+        window.location.href = "/admin.html";
+    }
+
+}else {
+        failedAttempts++;
+
+        if (failedAttempts >= 3) {
+            document.getElementById("captchaBox").style.display = "block";
+            document.getElementById("captcha").textContent = "7K4P9";
+        }
+
+        document.getElementById("error").textContent =
+            data.error || "Invalid login.";
+    }
+});
+</script>
+
+</body>
+</html>
