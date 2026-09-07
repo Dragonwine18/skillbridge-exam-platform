@@ -13,7 +13,7 @@ const { authenticate } = require("@google-cloud/local-auth");
 const { OAuth2Client } = require("google-auth-library");
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // -------------------------
 // Basic server setup
