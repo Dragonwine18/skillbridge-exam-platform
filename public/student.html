@@ -12,18 +12,15 @@
 
     <h1>Take Examination</h1>
 
-    <input
-        id="examCode"
-        placeholder="Enter exam code"
-    >
+    <div id="examLoading">Loading your selected assessment...</div>
 
-    <input
-        id="studentName"
-        placeholder="Your name"
-    >
+    <div id="candidateIdentity" class="candidate-identity" style="display:none;">
+        <span class="candidate-label">Candidate</span>
+        <strong id="studentNameDisplay">Loading...</strong>
+    </div>
 
     <button onclick="startExam()">
-        Start Exam
+        Start Assessment
     </button>
 
     <div id="examArea"></div>
@@ -45,6 +42,8 @@ let recorder = null;
 let chunks = [];
 let examActive = false;
 let answers = {};
+let recorderStopHandler = null;
+let submissionInProgress = false;
 
 
 // ===============================
@@ -53,36 +52,49 @@ let answers = {};
 
 async function startExam() {
 
-    const code =
-        document.getElementById("examCode").value.trim();
+    const examId = new URLSearchParams(window.location.search).get("exam");
 
-    const name =
-        document.getElementById("studentName").value.trim();
-
-
-    if (!code || !name) {
-
-        alert("Enter your name and exam code.");
-
+    if (!examId) {
+        alert("Please select an assessment from Available Exams.");
+        window.location.href = "/student-portal.html";
         return;
     }
 
+    // The candidate name is taken automatically from the logged-in student profile.
+    const profileResponse = await fetch("/api/student/profile");
+    const profilePayload = await profileResponse.json().catch(() => ({}));
+    if (!profileResponse.ok || !profilePayload.success || !profilePayload.profile?.full_name) {
+        alert(profilePayload.error || "We could not load your student account. Please return to the Student Portal.");
+        window.location.href = "/student-portal.html";
+        return;
+    }
+    const name = profilePayload.profile.full_name;
 
-    // Get exam from server
+    document.getElementById("studentNameDisplay").textContent = name;
+    document.getElementById("candidateIdentity").style.display = "flex";
 
+    // Get the selected exam from the server.
     const response =
-        await fetch(`/api/exams/${code}`);
+        await fetch(`/api/exams/${encodeURIComponent(examId)}`);
 
+    const payload = await response.json().catch(() => ({}));
+
+    if (response.status === 429 && payload.code === "COOLDOWN_30_DAYS") {
+        const nextDate = payload.nextAvailableAt
+            ? new Date(payload.nextAvailableAt).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })
+            : "30 days after your last attempt";
+        alert(`30-day cooldown reached. You can take this exam again from ${nextDate}.`);
+        window.location.href = "/student-portal.html";
+        return;
+    }
 
     if (!response.ok) {
-
-        alert("Exam not found.");
-
+        alert(payload.error || "Exam not found.");
         return;
     }
 
-
-    exam = await response.json();
+    exam = payload;
+    document.getElementById("examLoading").style.display = "none";
 
 
     // Ask for camera and microphone
@@ -133,19 +145,14 @@ async function startExam() {
 
 
     recorder.onstop = async function() {
-
-        const videoBlob =
-            new Blob(chunks, {
-                type: "video/webm"
-            });
-
-
-        await sendAttempt(
-            videoBlob,
-            examActive ? "completed" : "terminated",
-            null
-        );
-
+        // Submission/termination installs its own promise handler before
+        // stopping the recorder. This fallback keeps the recording safe if
+        // the recorder is stopped for another reason.
+        if (recorderStopHandler) {
+            const handler = recorderStopHandler;
+            recorderStopHandler = null;
+            await handler();
+        }
     };
 
 
@@ -162,6 +169,14 @@ async function startExam() {
 // ===============================
 // DISPLAY EXAM
 // ===============================
+
+function getOption(q, letter) {
+    if (!q || !q.options) return "";
+    if (Array.isArray(q.options)) {
+        return q.options[{ A: 0, B: 1, C: 2, D: 3 }[letter]] || "";
+    }
+    return q.options[letter] || "";
+}
 
 function displayExam() {
 
@@ -206,7 +221,7 @@ function displayExam() {
                         name="q${index}"
                         onchange="saveAnswer(${index}, 'A')"
                     >
-                    ${q.options.A}
+                    ${getOption(q, 'A')}
                 </label>
 
                 <label>
@@ -215,7 +230,7 @@ function displayExam() {
                         name="q${index}"
                         onchange="saveAnswer(${index}, 'B')"
                     >
-                    ${q.options.B}
+                    ${getOption(q, 'B')}
                 </label>
 
                 <label>
@@ -224,7 +239,7 @@ function displayExam() {
                         name="q${index}"
                         onchange="saveAnswer(${index}, 'C')"
                     >
-                    ${q.options.C}
+                    ${getOption(q, 'C')}
                 </label>
 
                 <label>
@@ -233,7 +248,7 @@ function displayExam() {
                         name="q${index}"
                         onchange="saveAnswer(${index}, 'D')"
                     >
-                    ${q.options.D}
+                    ${getOption(q, 'D')}
                 </label>
 
             </div>
@@ -249,10 +264,11 @@ function displayExam() {
 // SAVE ANSWER
 // ===============================
 
-function saveAnswer(question, answer) {
-
-    answers[question] = answer;
-
+function saveAnswer(questionIndex, answer) {
+    const question = exam?.questions?.[questionIndex];
+    if (!question) return;
+    const questionId = question.id || `q-${questionIndex + 1}`;
+    answers[questionId] = answer;
 }
 
 
@@ -320,20 +336,8 @@ async function terminateExam(reason) {
         `;
 
 
-    if (
-        recorder &&
-        recorder.state !== "inactive"
-    ) {
-
-        // Save reason for upload
-
-        recorder.stop();
-
-        await sendAttemptAfterStop(
-            "terminated",
-            reason
-        );
-
+    if (recorder && recorder.state !== "inactive") {
+        await stopRecordingAndSubmit("terminated", reason);
     }
 
 }
@@ -365,52 +369,40 @@ async function submitExam() {
         `;
 
 
-    if (
-        recorder &&
-        recorder.state !== "inactive"
-    ) {
-
-        recorder.stop();
-
-        await sendAttemptAfterStop(
-            "completed",
-            ""
-        );
-
+    if (recorder && recorder.state !== "inactive") {
+        await stopRecordingAndSubmit("completed", "");
+    } else {
+        await finishAttemptWithoutRecording("completed", "");
     }
-
 }
 
 
 // ===============================
-// WAIT FOR RECORDER THEN SEND
+// STOP RECORDER SAFELY THEN SEND
 // ===============================
 
-function sendAttemptAfterStop(status, reason) {
-
+function stopRecordingAndSubmit(status, reason) {
     return new Promise(function(resolve) {
-
-        recorder.onstop = async function() {
-
-            const videoBlob =
-                new Blob(chunks, {
-                    type: "video/webm"
-                });
-
-
-            await sendAttempt(
-                videoBlob,
-                status,
-                reason
-            );
-
-
-            resolve();
-
+        recorderStopHandler = async function() {
+            try {
+                const videoBlob = new Blob(chunks, { type: "video/webm" });
+                await sendAttempt(videoBlob, status, reason);
+            } finally {
+                resolve();
+            }
         };
 
+        try {
+            recorder.stop();
+        } catch (error) {
+            recorderStopHandler = null;
+            resolve();
+        }
     });
+}
 
+async function finishAttemptWithoutRecording(status, reason) {
+    await sendAttempt(null, status, reason);
 }
 
 
@@ -428,11 +420,9 @@ async function sendAttempt(
         new FormData();
 
 
-    form.append(
-        "video",
-        videoBlob,
-        "recording.webm"
-    );
+    if (videoBlob && videoBlob.size > 0) {
+        form.append("video", videoBlob, "recording.webm");
+    }
 
 
     form.append(
@@ -441,15 +431,16 @@ async function sendAttempt(
     );
 
 
-    form.append(
-        "studentName",
-        document.getElementById("studentName").value
-    );
-
+    // Name is resolved server-side from the authenticated student account.
 
     form.append(
         "answers",
         JSON.stringify(answers)
+    );
+
+    form.append(
+        "questionIds",
+        JSON.stringify(exam.questions.map(q => q.id))
     );
 
 
@@ -479,24 +470,22 @@ async function sendAttempt(
         await response.json();
 
 
-    if (result.success) {
-
-        console.log(
-            "Attempt saved:",
-            result.attemptId
-        );
-
+    if (!response.ok || !result.success) {
+        throw new Error(result.error || "Could not save the exam.");
     }
 
+    console.log("Attempt saved:", result.attemptId);
 
     // Stop camera and microphone
 
     if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+    }
 
-        stream.getTracks().forEach(
-            track => track.stop()
-        );
-
+    if (status === "completed" && result.attemptId) {
+        window.location.href = `/result.html?attempt=${encodeURIComponent(result.attemptId)}`;
+    } else if (status === "terminated") {
+        window.location.href = "/student-portal.html";
     }
 
 }

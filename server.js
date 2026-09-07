@@ -75,6 +75,8 @@ app.get("/", (req, res) => {
 
 // Make sure uploads folder exists
 fs.mkdirSync("uploads", { recursive: true });
+fs.mkdirSync(path.join("uploads", "recordings"), { recursive: true });
+app.use("/recordings", express.static(path.join(__dirname, "uploads", "recordings")));
 
 const upload = multer({
     dest: "uploads/"
@@ -420,6 +422,79 @@ app.post("/api/admin/logout", (req, res) => {
 
 
 // -------------------------
+// Student demo data
+// -------------------------
+app.get("/api/student/profile", (req, res) => {
+    if (!req.session.adminId || req.session.role !== "student") {
+        return res.status(403).json({ success: false, error: "Student access required." });
+    }
+    const profile = db.prepare(`
+        SELECT full_name, student_id, class_name, email, phone, joined_date, institution, department, bio
+        FROM student_profiles WHERE admin_id = ?
+    `).get(req.session.adminId);
+
+    // The exam portal must work with the main site's student account even when
+    // that account does not yet have a row in the optional demo profile table.
+    // Use the authenticated username/email as a safe fallback instead of
+    // forcing the student to log in again or type their name.
+    if (!profile) {
+        const account = db.prepare(`
+            SELECT id, email FROM admins WHERE id = ? AND role = 'student'
+        `).get(req.session.adminId);
+
+        if (!account) {
+            return res.status(404).json({ success: false, error: "Student account not found." });
+        }
+
+        const fallbackName = String(account.email || 'Student')
+            .split('@')[0]
+            .replace(/[._-]+/g, ' ')
+            .replace(/\b\w/g, c => c.toUpperCase());
+
+        return res.json({
+            success: true,
+            profile: {
+                full_name: fallbackName,
+                student_id: `SB-${account.id}`,
+                class_name: 'Student',
+                email: account.email,
+                phone: '',
+                joined_date: '',
+                institution: '',
+                department: '',
+                bio: ''
+            }
+        });
+    }
+
+    res.json({ success: true, profile });
+});
+
+app.get("/api/student/results", (req, res) => {
+    if (!req.session.adminId || req.session.role !== "student") {
+        return res.status(403).json({ success: false, error: "Student access required." });
+    }
+    const results = db.prepare(`
+        SELECT exam_name, exam_date, score, total, duration, status
+        FROM demo_results WHERE student_id = ? ORDER BY exam_date ASC
+    `).all(req.session.adminId);
+    const completed = results.length;
+    const points = results.reduce((sum, r) => sum + r.score, 0);
+    const possible = results.reduce((sum, r) => sum + r.total, 0);
+    const percentages = results.map(r => Math.round((r.score / r.total) * 100));
+    res.json({
+        success: true, results,
+        stats: {
+            completed,
+            average: completed ? Math.round(percentages.reduce((a,b) => a+b, 0) / completed) : 0,
+            best: completed ? Math.max(...percentages) : 0,
+            totalQuestions: possible,
+            accuracy: possible ? Math.round((points / possible) * 100) : 0
+        }
+    });
+});
+
+// -------------------------
 // Google Drive
 // -------------------------
 
@@ -617,26 +692,151 @@ app.post("/api/exams", (req, res) => {
 });
 
 // -------------------------
-// Get exam
+// 30-day exam eligibility
+// -------------------------
+const EXAM_COOLDOWN_DAYS = 30;
+const EXAM_COOLDOWN_MS = EXAM_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
+
+function getLatestAttempt(studentId, examId) {
+    return db.prepare(`
+        SELECT id, started_at, completed_at, status
+        FROM exam_attempts
+        WHERE student_id = ?
+          AND exam_id = ?
+        ORDER BY started_at DESC
+        LIMIT 1
+    `).get(studentId, examId);
+}
+
+function getExamEligibility(studentId, examId) {
+    const attempt = getLatestAttempt(studentId, examId);
+    if (!attempt) {
+        return { canAttempt: true, attemptedRecently: false, nextAvailableAt: null };
+    }
+
+    const startedAt = new Date(attempt.started_at);
+    const nextAvailableAt = new Date(startedAt.getTime() + EXAM_COOLDOWN_MS);
+    const canAttempt = Date.now() >= nextAvailableAt.getTime();
+
+    return {
+        canAttempt,
+        attemptedRecently: !canAttempt,
+        nextAvailableAt: nextAvailableAt.toISOString(),
+        lastAttemptAt: attempt.started_at
+    };
+}
+
+// -------------------------
+// Get exams
 // -------------------------
 app.get("/api/exams", (req, res) => {
 
-    if (!req.session.adminId) {
+    if (!req.session.adminId || !["student", "examiner"].includes(req.session.role)) {
         return res.status(401).json({
-            error: "You must be logged in."
+            error: "Login required."
         });
     }
 
-    const exams = db.prepare(`
-        SELECT id, title, duration, created_at
-        FROM exams
-        ORDER BY created_at DESC
-    `).all();
+    try {
 
-    res.json(exams);
+        const exams = req.session.role === "examiner"
+            ? db.prepare(`
+                SELECT id, title, duration, questions, admin_id, created_at
+                FROM exams
+                WHERE admin_id = ?
+                ORDER BY created_at DESC
+            `).all(req.session.adminId)
+            : db.prepare(`
+                SELECT id, title, duration, questions, created_at
+                FROM exams
+                ORDER BY created_at DESC
+            `).all();
+
+        const formattedExams = exams.map(exam => {
+
+            const examData = JSON.parse(exam.questions);
+
+            const eligibility = req.session.role === "student"
+                ? getExamEligibility(req.session.adminId, exam.id)
+                : { canAttempt: true, attemptedRecently: false, nextAvailableAt: null };
+
+            return {
+                id: exam.id,
+                title: exam.title,
+                duration: exam.duration,
+                questionCount: examData.questionCount,
+                created_at: exam.created_at,
+                canAttempt: eligibility.canAttempt,
+                attemptedRecently: eligibility.attemptedRecently,
+                nextAvailableAt: eligibility.nextAvailableAt,
+                lastAttemptAt: eligibility.lastAttemptAt || null
+            };
+
+        });
+
+        res.json(formattedExams);
+
+    } catch (error) {
+
+        console.error("Load exams error:", error);
+
+        res.status(500).json({
+            error: "Could not load exams."
+        });
+    }
 });
+
+
+// -------------------------
+// Delete exam (examiner only)
+// -------------------------
+app.delete("/api/exams/:id", (req, res) => {
+
+    if (!req.session.adminId || req.session.role !== "examiner") {
+        return res.status(403).json({
+            success: false,
+            error: "Examiner access required."
+        });
+    }
+
+    try {
+        const exam = db.prepare(`
+            SELECT id, title
+            FROM exams
+            WHERE id = ? AND admin_id = ?
+        `).get(req.params.id, req.session.adminId);
+
+        if (!exam) {
+            return res.status(404).json({
+                success: false,
+                error: "Exam not found."
+            });
+        }
+
+        db.prepare(`
+            DELETE FROM exams
+            WHERE id = ? AND admin_id = ?
+        `).run(req.params.id, req.session.adminId);
+
+        return res.json({
+            success: true,
+            message: `\"${exam.title}\" was deleted successfully.`
+        });
+    } catch (error) {
+        console.error("Exam delete error:", error);
+        return res.status(500).json({
+            success: false,
+            error: "Could not delete exam."
+        });
+    }
+});
+
+// -------------------------
+// Get single exam
+// -------------------------
 app.get("/api/exams/:id", (req, res) => {
-        if (!req.session.adminId) {
+
+    if (!req.session.adminId) {
         return res.status(401).json({
             error: "You must be logged in."
         });
@@ -653,7 +853,65 @@ app.get("/api/exams/:id", (req, res) => {
         });
     }
 
-    exam.questions = JSON.parse(exam.questions);
+    if (req.session.role === "student") {
+        const eligibility = getExamEligibility(req.session.adminId, exam.id);
+        if (!eligibility.canAttempt) {
+            return res.status(429).json({
+                success: false,
+                code: "COOLDOWN_30_DAYS",
+                error: "You can write this exam again only after 30 days from your last attempt.",
+                nextAvailableAt: eligibility.nextAvailableAt,
+                lastAttemptAt: eligibility.lastAttemptAt
+            });
+        }
+    }
+
+    const examData = JSON.parse(exam.questions);
+
+    // Exams store a reference to the question bank. Resolve that bank here
+    // before sending the exam to the student; otherwise the browser receives
+    // only { bankId, questionCount } and has no actual questions to render.
+    let questions = [];
+    if (Array.isArray(examData)) {
+        questions = examData;
+    } else if (examData && examData.bankId) {
+        const bank = db.prepare(`
+            SELECT questions FROM question_banks WHERE id = ?
+        `).get(Number(examData.bankId));
+
+        if (!bank) {
+            return res.status(404).json({
+                success: false,
+                error: "The question bank for this exam could not be found."
+            });
+        }
+
+        const bankQuestions = JSON.parse(bank.questions);
+        const requestedCount = Math.min(
+            Number(examData.questionCount) || bankQuestions.length,
+            bankQuestions.length
+        );
+
+        // Give every selected question a stable ID tied to its bank position.
+        // This lets the result endpoint verify answers server-side.
+        questions = bankQuestions
+            .map((q, originalIndex) => ({
+                ...q,
+                id: q.id || `bank-${examData.bankId}-q-${originalIndex + 1}`,
+                __bankIndex: originalIndex
+            }))
+            .sort(() => Math.random() - 0.5)
+            .slice(0, requestedCount)
+            .map(q => ({
+                ...q,
+                options: Array.isArray(q.options)
+                    ? { A: q.options[0], B: q.options[1], C: q.options[2], D: q.options[3] }
+                    : q.options
+            }));
+    }
+
+    exam.questions = questions;
+    exam.questionCount = questions.length;
 
     res.json(exam);
 });
@@ -693,6 +951,30 @@ async function uploadToDrive(
 }
 
 // -------------------------
+// Result helpers
+// -------------------------
+function parseJsonSafe(value, fallback) {
+    try { return JSON.parse(value || ""); } catch (_) { return fallback; }
+}
+
+function getAttemptQuestions(examId, questionIds) {
+    const exam = db.prepare("SELECT questions FROM exams WHERE id = ?").get(examId);
+    if (!exam) return [];
+    const examData = parseJsonSafe(exam.questions, {});
+    if (Array.isArray(examData)) return examData;
+    const bank = db.prepare("SELECT questions FROM question_banks WHERE id = ?").get(Number(examData.bankId));
+    if (!bank) return [];
+    const bankQuestions = parseJsonSafe(bank.questions, []);
+    return questionIds.map(id => {
+        const exact = bankQuestions.find(q => q.id && String(q.id) === String(id));
+        if (exact) return exact;
+        const match = String(id).match(/-q-(\d+)$/);
+        if (match) return bankQuestions[Number(match[1]) - 1];
+        return null;
+    }).filter(Boolean);
+}
+
+// -------------------------
 // Save exam attempt
 // -------------------------
 
@@ -703,32 +985,109 @@ app.post(
 
         try {
 
+            if (!req.session.adminId || req.session.role !== "student") {
+                return res.status(403).json({
+                    success: false,
+                    error: "Student access required."
+                });
+            }
+
+            const examId = String(req.body.examId || "").trim();
+            if (!examId) {
+                return res.status(400).json({ success: false, error: "Exam ID is required." });
+            }
+
+            const exam = db.prepare(`SELECT id, title FROM exams WHERE id = ?`).get(examId);
+            if (!exam) {
+                return res.status(404).json({ success: false, error: "Exam not found." });
+            }
+
+            // One attempt every 30 days per student and per exam.
+            const eligibility = getExamEligibility(req.session.adminId, examId);
+            if (!eligibility.canAttempt) {
+                return res.status(429).json({
+                    success: false,
+                    code: "COOLDOWN_30_DAYS",
+                    error: "You have already attempted this exam within the last 30 days.",
+                    nextAvailableAt: eligibility.nextAvailableAt,
+                    lastAttemptAt: eligibility.lastAttemptAt
+                });
+            }
+
             const attemptId =
                 Math.random()
                     .toString(36)
                     .substring(2, 10);
 
             let driveFile = null;
+            let localVideoPath = null;
 
-            // Upload recording
+            // ALWAYS preserve the recording locally first. This means a Google
+            // Drive outage/expired OAuth token can never cause the recording to
+            // disappear.
             if (req.file) {
+                const safeName = `exam-${examId}-attempt-${attemptId}.webm`;
+                const destination = path.join(__dirname, "uploads", "recordings", safeName);
+                fs.renameSync(req.file.path, destination);
+                localVideoPath = `/recordings/${safeName}`;
+                console.log("Recording saved locally:", localVideoPath);
 
-                console.log(
-                    "Uploading recording to Google Drive..."
-                );
-
-                driveFile =
-                    await uploadToDrive(
-                        req.file.path,
-                        `exam-${req.body.examId}-attempt-${attemptId}.webm`,
-                        req.file.mimetype
-                    );
-
-                console.log(
-                    "Recording uploaded:",
-                    driveFile.id
-                );
+                // Then try Drive as a secondary copy.
+                if (drive) {
+                    try {
+                        driveFile = await uploadToDrive(destination, safeName, req.file.mimetype || "video/webm");
+                        console.log("Recording uploaded to Google Drive:", driveFile.id);
+                    } catch (driveError) {
+                        console.warn("Google Drive upload failed; local recording retained:", driveError.message);
+                    }
+                }
             }
+
+            const answers = parseJsonSafe(req.body.answers, {});
+            const questionIds = parseJsonSafe(req.body.questionIds, []);
+            const selectedQuestions = getAttemptQuestions(examId, questionIds);
+            let score = null;
+            let total = null;
+
+            if ((req.body.status || "completed") === "completed") {
+                total = selectedQuestions.length;
+                score = selectedQuestions.reduce((count, question, index) => {
+                    const id = questionIds[index];
+                    const chosen = String(answers[id] || "").toUpperCase();
+                    const correct = String(question.answer || question.correctAnswer || "").toUpperCase();
+                    return count + (chosen && chosen === correct ? 1 : 0);
+                }, 0);
+            }
+
+            const completedAt = new Date().toISOString();
+            db.prepare(`
+                INSERT INTO exam_attempts
+                (id, student_id, exam_id, started_at, completed_at, status, video_path, drive_file_id, score, total, answers, question_ids)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(
+                attemptId,
+                req.session.adminId,
+                examId,
+                completedAt,
+                completedAt,
+                req.body.status || "completed",
+                localVideoPath,
+                driveFile ? driveFile.id : null,
+                score,
+                total,
+                JSON.stringify(answers),
+                JSON.stringify(questionIds)
+            );
+
+            // Always resolve the candidate name from the authenticated account.
+            // Never trust a name supplied by the browser.
+            const studentProfile = db.prepare(`
+                SELECT full_name
+                FROM student_profiles
+                WHERE admin_id = ?
+            `).get(req.session.adminId);
+
+            const studentName = studentProfile?.full_name || req.session.adminEmail || "Student";
 
             attempts[attemptId] = {
 
@@ -737,8 +1096,7 @@ app.post(
                 examId:
                     req.body.examId,
 
-                studentName:
-                    req.body.studentName,
+                studentName,
 
                 answers:
                     JSON.parse(
@@ -754,19 +1112,11 @@ app.post(
                 video:
                     driveFile
                         ? driveFile.id
-                        : null,
+                        : localVideoPath,
 
                 time:
                     new Date().toISOString()
             };
-
-            // Delete temporary local recording
-            if (req.file) {
-                fs.unlink(
-                    req.file.path,
-                    () => {}
-                );
-            }
 
             console.log(
                 "Attempt saved:",
@@ -783,7 +1133,12 @@ app.post(
                 driveFileId:
                     driveFile
                         ? driveFile.id
-                        : null
+                        : null,
+
+                videoUrl: localVideoPath,
+                score,
+                total,
+                percentage: total ? Math.round((score / total) * 100) : null
             });
 
         } catch (error) {
@@ -805,14 +1160,236 @@ app.post(
 );
 
 // -------------------------
+// Student result
+// -------------------------
+app.get("/api/attempts/:id", (req, res) => {
+    if (!req.session.adminId || req.session.role !== "student") {
+        return res.status(403).json({ success: false, error: "Student access required." });
+    }
+
+    const attempt = db.prepare(`
+        SELECT a.*, e.title AS exam_title, e.duration
+        FROM exam_attempts a
+        JOIN exams e ON e.id = a.exam_id
+        WHERE a.id = ? AND a.student_id = ?
+    `).get(req.params.id, req.session.adminId);
+
+    if (!attempt) {
+        return res.status(404).json({ success: false, error: "Result not found." });
+    }
+
+    const percentage = attempt.total ? Math.round((attempt.score / attempt.total) * 100) : 0;
+    const nextAvailableAt = new Date(new Date(attempt.started_at).getTime() + EXAM_COOLDOWN_MS).toISOString();
+    const profile = db.prepare("SELECT full_name FROM student_profiles WHERE admin_id = ?").get(req.session.adminId);
+    const account = db.prepare("SELECT email FROM admins WHERE id = ?").get(req.session.adminId);
+
+    res.json({
+        success: true,
+        result: {
+            attemptId: attempt.id,
+            examId: attempt.exam_id,
+            examTitle: attempt.exam_title,
+            studentName: profile?.full_name || account?.email || "Student",
+            score: attempt.score ?? 0,
+            total: attempt.total ?? 0,
+            percentage,
+            status: attempt.status,
+            completedAt: attempt.completed_at,
+            nextAvailableAt,
+            videoUrl: attempt.video_path || null,
+            driveFileId: attempt.drive_file_id || null
+        }
+    });
+});
+
+// -------------------------
+// Examiner: student results, performance graph data and recordings
+// -------------------------
+app.get("/api/admin/results", (req, res) => {
+    if (!req.session.adminId || req.session.role !== "examiner") {
+        return res.status(403).json({ success: false, error: "Examiner access required." });
+    }
+
+    try {
+        const rows = db.prepare(`
+            SELECT
+                a.id,
+                a.student_id,
+                a.exam_id,
+                a.started_at,
+                a.completed_at,
+                a.status,
+                a.score,
+                a.total,
+                a.video_path,
+                a.drive_file_id,
+                e.title AS exam_title,
+                e.duration,
+                COALESCE(sp.full_name, st.email, 'Student') AS student_name,
+                COALESCE(sp.student_id, 'SB-' || st.id) AS student_code
+            FROM exam_attempts a
+            JOIN exams e ON e.id = a.exam_id
+            JOIN admins st ON st.id = a.student_id
+            LEFT JOIN student_profiles sp ON sp.admin_id = a.student_id
+            WHERE e.admin_id = ?
+            ORDER BY COALESCE(a.completed_at, a.started_at) DESC
+        `).all(req.session.adminId);
+
+        const results = rows.map(r => ({
+            id: r.id,
+            studentId: r.student_id,
+            studentName: r.student_name,
+            studentCode: r.student_code,
+            examId: r.exam_id,
+            examTitle: r.exam_title,
+            score: r.score ?? 0,
+            total: r.total ?? 0,
+            percentage: r.total ? Math.round((r.score / r.total) * 100) : 0,
+            status: r.status,
+            submittedAt: r.completed_at || r.started_at,
+            duration: r.duration,
+            videoUrl: r.video_path || null,
+            driveFileId: r.drive_file_id || null
+        }));
+
+        const students = db.prepare(`
+            SELECT DISTINCT
+                a.student_id AS studentId,
+                COALESCE(sp.full_name, st.email, 'Student') AS studentName,
+                COALESCE(sp.student_id, 'SB-' || st.id) AS studentCode
+            FROM exam_attempts a
+            JOIN exams e ON e.id = a.exam_id
+            JOIN admins st ON st.id = a.student_id
+            LEFT JOIN student_profiles sp ON sp.admin_id = a.student_id
+            WHERE e.admin_id = ?
+            ORDER BY studentName COLLATE NOCASE
+        `).all(req.session.adminId);
+
+        res.json({ success: true, results, students });
+    } catch (error) {
+        console.error("Admin results error:", error);
+        res.status(500).json({ success: false, error: "Could not load student results." });
+    }
+});
+
+app.get("/api/admin/students/:studentId/performance", (req, res) => {
+    if (!req.session.adminId || req.session.role !== "examiner") {
+        return res.status(403).json({ success: false, error: "Examiner access required." });
+    }
+
+    try {
+        const rows = db.prepare(`
+            SELECT
+                a.id,
+                a.exam_id,
+                a.completed_at,
+                a.started_at,
+                a.score,
+                a.total,
+                a.status,
+                a.video_path,
+                a.drive_file_id,
+                e.title AS exam_title,
+                COALESCE(sp.full_name, st.email, 'Student') AS student_name,
+                COALESCE(sp.student_id, 'SB-' || st.id) AS student_code
+            FROM exam_attempts a
+            JOIN exams e ON e.id = a.exam_id
+            JOIN admins st ON st.id = a.student_id
+            LEFT JOIN student_profiles sp ON sp.admin_id = a.student_id
+            WHERE a.student_id = ? AND e.admin_id = ?
+            ORDER BY COALESCE(a.completed_at, a.started_at) ASC
+        `).all(Number(req.params.studentId), req.session.adminId);
+
+        if (!rows.length) {
+            return res.status(404).json({ success: false, error: "No results found for this student." });
+        }
+
+        const student = {
+            id: rows[0].student_id,
+            name: rows[0].student_name,
+            code: rows[0].student_code
+        };
+        const performance = rows.map(r => ({
+            attemptId: r.id,
+            examTitle: r.exam_title,
+            percentage: r.total ? Math.round((r.score / r.total) * 100) : 0,
+            score: r.score ?? 0,
+            total: r.total ?? 0,
+            submittedAt: r.completed_at || r.started_at,
+            status: r.status,
+            videoUrl: r.video_path || null,
+            driveFileId: r.drive_file_id || null
+        }));
+
+        res.json({ success: true, student, performance });
+    } catch (error) {
+        console.error("Student performance error:", error);
+        res.status(500).json({ success: false, error: "Could not load student performance." });
+    }
+});
+
+app.get("/api/admin/attempts/:id", (req, res) => {
+    if (!req.session.adminId || req.session.role !== "examiner") {
+        return res.status(403).json({ success: false, error: "Examiner access required." });
+    }
+
+    try {
+        const row = db.prepare(`
+            SELECT
+                a.*,
+                e.title AS exam_title,
+                e.duration,
+                COALESCE(sp.full_name, st.email, 'Student') AS student_name,
+                COALESCE(sp.student_id, 'SB-' || st.id) AS student_code
+            FROM exam_attempts a
+            JOIN exams e ON e.id = a.exam_id
+            JOIN admins st ON st.id = a.student_id
+            LEFT JOIN student_profiles sp ON sp.admin_id = a.student_id
+            WHERE a.id = ? AND e.admin_id = ?
+        `).get(req.params.id, req.session.adminId);
+
+        if (!row) return res.status(404).json({ success: false, error: "Attempt not found." });
+
+        res.json({
+            success: true,
+            result: {
+                attemptId: row.id,
+                studentId: row.student_id,
+                studentName: row.student_name,
+                studentCode: row.student_code,
+                examTitle: row.exam_title,
+                score: row.score ?? 0,
+                total: row.total ?? 0,
+                percentage: row.total ? Math.round((row.score / row.total) * 100) : 0,
+                status: row.status,
+                submittedAt: row.completed_at || row.started_at,
+                startedAt: row.started_at,
+                completedAt: row.completed_at,
+                duration: row.duration,
+                videoUrl: row.video_path || null,
+                driveFileId: row.drive_file_id || null
+            }
+        });
+    } catch (error) {
+        console.error("Admin attempt error:", error);
+        res.status(500).json({ success: false, error: "Could not load attempt." });
+    }
+});
+
+// -------------------------
 // Start server
 // -------------------------
 
 async function startServer() {
 
     try {
-
-        await authorizeGoogleDrive();
+        try {
+            await authorizeGoogleDrive();
+        } catch (driveError) {
+            drive = null;
+            console.warn("Google Drive unavailable. Recordings will still be saved locally.");
+            console.warn(driveError.message);
+        }
 
         app.listen(
             PORT,
