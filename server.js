@@ -176,10 +176,22 @@ app.post(
                     options.every(option => option) &&
                     ["A", "B", "C", "D"].includes(answer)
                 ) {
+                    // Optional difficulty metadata. Accept either:
+                    // DIFFICULTY: EASY / MEDIUM / HARD
+                    // in the block (recommended for adaptive exams).
+                    const difficultyLine = lines.find(line => /^DIFFICULTY:\s*/i.test(line));
+                    const rawDifficulty = difficultyLine
+                        ? difficultyLine.replace(/^DIFFICULTY:\s*/i, "").trim().toLowerCase()
+                        : "";
+                    const difficulty = ["easy", "medium", "hard"].includes(rawDifficulty)
+                        ? rawDifficulty
+                        : null;
+
                     questions.push({
                         question,
                         options,
-                        answer
+                        answer,
+                        difficulty
                     });
                 }
             }
@@ -650,7 +662,9 @@ app.post("/api/exams", (req, res) => {
          */
         const examData = {
             bankId: Number(bankId),
-            questionCount: Number(questionCount)
+            questionCount: Number(questionCount),
+            adaptive: true,
+            adaptiveBatchSize: 5
         };
 
         // Save exam
@@ -834,12 +848,101 @@ app.delete("/api/exams/:id", (req, res) => {
 // -------------------------
 // Get single exam
 // -------------------------
+function normalizeDifficulty(value, index, total) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (["easy", "medium", "hard"].includes(normalized)) {
+        return normalized;
+    }
+
+    // Backward-compatible default for older question banks that do not
+    // contain difficulty metadata: split the bank into 3 tiers.
+    const ratio = total > 0 ? index / total : 0;
+    if (ratio < 0.34) return "easy";
+    if (ratio < 0.67) return "medium";
+    return "hard";
+}
+
+function difficultyRank(level) {
+    return { easy: 0, medium: 1, hard: 2 }[level] ?? 1;
+}
+
+function nextDifficulty(level, score, batchSize = 5) {
+    const rank = difficultyRank(level);
+    if (score >= Math.ceil(batchSize * 0.8)) {
+        return ["easy", "medium", "hard"][Math.min(2, rank + 1)];
+    }
+    if (score <= Math.floor(batchSize * 0.4)) {
+        return ["easy", "medium", "hard"][Math.max(0, rank - 1)];
+    }
+    return level;
+}
+
+function buildAdaptiveQuestionPool(bankQuestions, bankId) {
+    const total = bankQuestions.length;
+    return bankQuestions.map((q, originalIndex) => ({
+        ...q,
+        id: q.id || `bank-${bankId}-q-${originalIndex + 1}`,
+        __bankIndex: originalIndex,
+        difficulty: normalizeDifficulty(q.difficulty, originalIndex, total)
+    }));
+}
+
+function shuffleServer(array) {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i -= 1) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+}
+
+function publicQuestion(question) {
+    const optionTexts = Array.isArray(question.options)
+        ? question.options.slice(0, 4)
+        : ["A", "B", "C", "D"].map(letter => question.options?.[letter]);
+
+    const correctOriginalIndex = {
+        A: 0,
+        B: 1,
+        C: 2,
+        D: 3
+    }[String(question.answer || question.correctAnswer || "").toUpperCase()];
+
+    const shuffledOptions = shuffleServer(
+        optionTexts.map((text, originalIndex) => ({
+            id: `${question.id}-option-${originalIndex}`,
+            text
+        }))
+    );
+
+    return {
+        id: question.id,
+        question: question.question,
+        options: shuffledOptions,
+        __correctOptionId: `${question.id}-option-${correctOriginalIndex}`,
+        __bankIndex: question.__bankIndex,
+        difficulty: question.difficulty
+    };
+}
+
+function selectAdaptiveBatch(pool, targetDifficulty, excludedIds, count) {
+    const excluded = new Set((excludedIds || []).map(String));
+    const target = shuffleServer(pool.filter(q => q.difficulty === targetDifficulty && !excluded.has(String(q.id))));
+
+    const selected = target.slice(0, count);
+    if (selected.length >= count) return selected;
+
+    // Fill remaining slots from the nearest difficulty tiers so an imperfect
+    // or small question bank never traps the student.
+    const remaining = pool.filter(q => !excluded.has(String(q.id)) && !selected.some(x => x.id === q.id));
+    remaining.sort((a, b) => Math.abs(difficultyRank(a.difficulty) - difficultyRank(targetDifficulty)) - Math.abs(difficultyRank(b.difficulty) - difficultyRank(targetDifficulty)));
+    return selected.concat(shuffleServer(remaining).slice(0, count - selected.length));
+}
+
 app.get("/api/exams/:id", (req, res) => {
 
     if (!req.session.adminId) {
-        return res.status(401).json({
-            error: "You must be logged in."
-        });
+        return res.status(401).json({ error: "You must be logged in." });
     }
 
     const exam = db.prepare(`
@@ -848,9 +951,7 @@ app.get("/api/exams/:id", (req, res) => {
     `).get(req.params.id);
 
     if (!exam) {
-        return res.status(404).json({
-            error: "Exam not found"
-        });
+        return res.status(404).json({ error: "Exam not found" });
     }
 
     if (req.session.role === "student") {
@@ -867,53 +968,132 @@ app.get("/api/exams/:id", (req, res) => {
     }
 
     const examData = JSON.parse(exam.questions);
+    let bankId = null;
+    let bankQuestions = [];
 
-    // Exams store a reference to the question bank. Resolve that bank here
-    // before sending the exam to the student; otherwise the browser receives
-    // only { bankId, questionCount } and has no actual questions to render.
-    let questions = [];
     if (Array.isArray(examData)) {
-        questions = examData;
+        bankQuestions = examData;
     } else if (examData && examData.bankId) {
-        const bank = db.prepare(`
-            SELECT questions FROM question_banks WHERE id = ?
-        `).get(Number(examData.bankId));
-
+        bankId = Number(examData.bankId);
+        const bank = db.prepare(`SELECT questions FROM question_banks WHERE id = ?`).get(bankId);
         if (!bank) {
             return res.status(404).json({
                 success: false,
                 error: "The question bank for this exam could not be found."
             });
         }
+        bankQuestions = JSON.parse(bank.questions);
+    }
 
-        const bankQuestions = JSON.parse(bank.questions);
-        const requestedCount = Math.min(
-            Number(examData.questionCount) || bankQuestions.length,
-            bankQuestions.length
-        );
+    const requestedCount = Math.min(
+        Number(examData?.questionCount) || bankQuestions.length,
+        bankQuestions.length
+    );
 
-        // Give every selected question a stable ID tied to its bank position.
-        // This lets the result endpoint verify answers server-side.
-        questions = bankQuestions
-            .map((q, originalIndex) => ({
-                ...q,
-                id: q.id || `bank-${examData.bankId}-q-${originalIndex + 1}`,
-                __bankIndex: originalIndex
-            }))
-            .sort(() => Math.random() - 0.5)
+    const batchSize = Math.max(1, Math.min(5, Number(examData?.adaptiveBatchSize) || 5));
+    const adaptivePool = buildAdaptiveQuestionPool(bankQuestions, bankId || exam.id);
+    const adaptiveEnabled = examData?.adaptive !== false;
+
+    let questions;
+    if (adaptiveEnabled) {
+        // Start at MEDIUM. If the bank lacks enough medium questions,
+        // selectAdaptiveBatch fills the remainder with nearby levels.
+        const firstBatch = selectAdaptiveBatch(adaptivePool, "medium", [], Math.min(batchSize, requestedCount));
+        questions = firstBatch.map(publicQuestion);
+    } else {
+        questions = shuffleServer(adaptivePool)
             .slice(0, requestedCount)
-            .map(q => ({
-                ...q,
-                options: Array.isArray(q.options)
-                    ? { A: q.options[0], B: q.options[1], C: q.options[2], D: q.options[3] }
-                    : q.options
-            }));
+            .map(publicQuestion);
     }
 
     exam.questions = questions;
     exam.questionCount = questions.length;
+    exam.totalQuestionCount = requestedCount;
+    exam.adaptive = adaptiveEnabled;
+    exam.adaptiveBatchSize = batchSize;
+    exam.completedQuestionCount = questions.length;
+
+    // Do not rely on the client-visible correct answer; it is stripped below.
+    exam.questions = exam.questions.map(q => {
+        const clean = { ...q };
+        delete clean.__correctOptionId;
+        return clean;
+    });
 
     res.json(exam);
+});
+
+// Return the next adaptive batch after grading the previous 5 questions.
+app.post("/api/exams/:id/adaptive-next", (req, res) => {
+    if (!req.session.adminId || req.session.role !== "student") {
+        return res.status(403).json({ success: false, error: "Student access required." });
+    }
+
+    try {
+        const exam = db.prepare(`SELECT * FROM exams WHERE id = ?`).get(req.params.id);
+        if (!exam) return res.status(404).json({ success: false, error: "Exam not found." });
+
+        const examData = parseJsonSafe(exam.questions, {});
+        const bankId = Number(examData.bankId);
+        const bank = db.prepare(`SELECT questions FROM question_banks WHERE id = ?`).get(bankId);
+        if (!bank) return res.status(404).json({ success: false, error: "Question bank not found." });
+
+        const pool = buildAdaptiveQuestionPool(parseJsonSafe(bank.questions, []), bankId);
+        const batchSize = Math.max(1, Math.min(5, Number(examData.adaptiveBatchSize) || 5));
+        const requestedCount = Math.min(Number(examData.questionCount) || pool.length, pool.length);
+        const questionIds = parseJsonSafe(req.body.questionIds, []).map(String);
+        const answers = parseJsonSafe(req.body.answers, {});
+        const usedIds = parseJsonSafe(req.body.usedQuestionIds, []).map(String);
+
+        const batchQuestions = pool.filter(q => questionIds.includes(String(q.id)));
+        let score = 0;
+        for (const question of batchQuestions) {
+            const chosen = String(answers[question.id] || "");
+            const answerLetter = String(question.answer || question.correctAnswer || "").toUpperCase();
+            const correctIndex = { A: 0, B: 1, C: 2, D: 3 }[answerLetter];
+            const correctOptionId = `${question.id}-option-${correctIndex}`;
+            if (chosen && chosen === correctOptionId) score += 1;
+        }
+
+        const currentDifficulty = batchQuestions[0]?.difficulty || "medium";
+        const targetDifficulty = nextDifficulty(currentDifficulty, score, batchQuestions.length || batchSize);
+        const remainingNeeded = Math.min(batchSize, Math.max(0, requestedCount - usedIds.length));
+
+        if (remainingNeeded === 0) {
+            return res.json({
+                success: true,
+                done: true,
+                score,
+                total: batchQuestions.length,
+                difficulty: currentDifficulty,
+                questions: [],
+                completedQuestionCount: usedIds.length,
+                totalQuestionCount: requestedCount
+            });
+        }
+
+        const selected = selectAdaptiveBatch(pool, targetDifficulty, usedIds, remainingNeeded);
+        const publicQuestions = selected.map(publicQuestion).map(q => {
+            const clean = { ...q };
+            delete clean.__correctOptionId;
+            return clean;
+        });
+
+        res.json({
+            success: true,
+            done: false,
+            score,
+            total: batchQuestions.length,
+            previousDifficulty: currentDifficulty,
+            nextDifficulty: targetDifficulty,
+            questions: publicQuestions,
+            completedQuestionCount: usedIds.length + publicQuestions.length,
+            totalQuestionCount: requestedCount
+        });
+    } catch (error) {
+        console.error("Adaptive batch error:", error);
+        res.status(500).json({ success: false, error: "Could not load the next adaptive question set." });
+    }
 });
 
 // -------------------------
@@ -1049,13 +1229,34 @@ app.post(
             let score = null;
             let total = null;
 
-            if ((req.body.status || "completed") === "completed") {
+                        if ((req.body.status || "completed") === "completed") {
                 total = selectedQuestions.length;
+
                 score = selectedQuestions.reduce((count, question, index) => {
-                    const id = questionIds[index];
-                    const chosen = String(answers[id] || "").toUpperCase();
-                    const correct = String(question.answer || question.correctAnswer || "").toUpperCase();
-                    return count + (chosen && chosen === correct ? 1 : 0);
+                    const questionId = String(questionIds[index] || "");
+                    const chosenOptionId = String(
+                        answers[questionId] || ""
+                    );
+
+                    const correctLetter = String(
+                        question.answer || question.correctAnswer || ""
+                    ).toUpperCase();
+
+                    const correctIndex = {
+                        A: 0,
+                        B: 1,
+                        C: 2,
+                        D: 3
+                    }[correctLetter];
+
+                    const correctOptionId =
+                        `${questionId}-option-${correctIndex}`;
+
+                    return count + (
+                        chosenOptionId === correctOptionId
+                            ? 1
+                            : 0
+                    );
                 }, 0);
             }
 
