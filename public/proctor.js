@@ -14,24 +14,24 @@
     faceModelPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
     poseModelPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
     detectionIntervalMs: 90,
-    noFaceGraceMs: 2400,
-    multipleFaceGraceMs: 650,
-    headAwayGraceMs: 1900,
-    gazeOutsideGraceMs: 1200,
-    bodyMoveGraceMs: 2800,
+    noFaceGraceMs: 4000,
+    multipleFaceGraceMs: 1500,
+    headAwayGraceMs: 2000,
+    gazeOutsideGraceMs: 2000,
+    bodyMoveGraceMs: 4500,
     maxFaces: 4,
     minFaceDetectionConfidence: 0.45,
     minFacePresenceConfidence: 0.45,
     minTrackingConfidence: 0.45,
-    defaultEnvelope: { minX: 0.14, maxX: 0.86, minY: 0.14, maxY: 0.86 },
+    defaultEnvelope: { minX: 0.10, maxX: 0.90, minY: 0.10, maxY: 0.90 },
     calibrationSampleMs: 70,
     calibrationMinSamples: 24,
-    calibrationPadX: 0.12,
-    calibrationPadY: 0.12,
-    bodyCenterDelta: 0.26,
-    bodyScaleDelta: 0.32,
+    calibrationPadX: 0.18,
+    calibrationPadY: 0.18,
+    bodyCenterDelta: 0.32,
+    bodyScaleDelta: 0.38,
     bodyOptional: true,
-    eventCooldownMs: 1400
+    eventCooldownMs: 2200
   };
 
   let FaceLandmarker = null;
@@ -106,9 +106,9 @@
   function gazeFromLandmarks(lm, blend) {
     if (!lm) return null;
 
-    // Primary: MediaPipe eye-look blendshapes. These encode relative eye
-    // direction and are much less sensitive to head position than raw pixel
-    // coordinates.
+    // Eye direction is estimated independently from head orientation.
+    // MediaPipe's eye-look blendshapes are the primary directional signal;
+    // iris geometry provides a continuous fallback/secondary signal.
     const cat = Object.fromEntries((blend || []).map(c => [c.categoryName, Number(c.score) || 0]));
     const outL = cat.eyeLookOutLeft || 0;
     const inL = cat.eyeLookInLeft || 0;
@@ -123,8 +123,9 @@
     const vertSignal = (downL + downR - upL - upR) / 2;
     const blendStrength = Math.max(outL, inL, outR, inR, downL, downR, upL, upR);
 
+    let blendGaze = null;
     if (blendStrength >= 0.025) {
-      return {
+      blendGaze = {
         x: clamp(0.5 + horizSignal * 2.2, 0, 1),
         y: clamp(0.5 + vertSignal * 2.2, 0, 1),
         method: 'blendshapes',
@@ -132,7 +133,9 @@
       };
     }
 
-    // Fallback: iris center inside each eye aperture.
+    // Iris signal is independent of headOrientation(). Normalize each iris
+    // against its own eye aperture so ordinary head movement does not become
+    // an eye-away event by itself.
     const li = avgPoint([468,469,470,471,472], lm);
     const ri = avgPoint([473,474,475,476,477], lm);
     const leftX = ratioX(li, point(33,lm), point(133,lm));
@@ -140,15 +143,22 @@
     const leftY = ratioY(li, point(159,lm), point(145,lm));
     const rightY = ratioY(ri, point(386,lm), point(374,lm));
 
+    let irisGaze = null;
     if ([leftX,rightX,leftY,rightY].every(Number.isFinite)) {
-      return {
+      irisGaze = {
         x: clamp((leftX + rightX) / 2, 0, 1),
         y: clamp((leftY + rightY) / 2, 0, 1),
         method: 'iris',
         strength: 0
       };
     }
-    return null;
+
+    // When blendshapes are available, favor them for directional eye motion.
+    // This is what lets the candidate move only their eyes while keeping the
+    // head still. Iris remains available as a fallback when blendshapes are
+    // unavailable.
+    if (blendGaze) return blendGaze;
+    return irisGaze;
   }
 
   function headOrientation(lm) {
@@ -156,11 +166,12 @@
     if (!nose || !forehead || !chin || !left || !right) return { away: false };
     const x = clamp((nose.x-left.x)/Math.max(right.x-left.x, 1e-5), 0, 1);
     const y = clamp((nose.y-forehead.y)/Math.max(chin.y-forehead.y, 1e-5), 0, 1);
-    return { x, y, away: Math.abs(x - 0.5) > 0.25 || Math.abs(y - 0.5) > 0.24 };
+    return { x, y, away: Math.abs(x - 0.5) > 0.31 || Math.abs(y - 0.5) > 0.30 };
   }
   function insideEnvelope(g) {
     const e = gazeEnvelope || CONFIG.defaultEnvelope;
-    return g.x >= e.minX && g.x <= e.maxX && g.y >= e.minY && g.y <= e.maxY;
+    const margin = 0.10;
+    return g.x >= e.minX - margin && g.x <= e.maxX + margin && g.y >= e.minY - margin && g.y <= e.maxY + margin;
   }
 
   function processFace(result) {

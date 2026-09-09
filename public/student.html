@@ -85,12 +85,6 @@ let recorderStopHandler = null;
 let submissionInProgress = false;
 let timerInterval = null;
 let remainingSeconds = 0;
-let coreCheckActive = false;
-let coreCheckTriggered = false;
-let coreQuestions = [];
-let coreAnswers = {};
-let coreTimerInterval = null;
-let coreRemainingSeconds = 0;
 
 // ===============================
 // ADAPTIVE EXAM STATE
@@ -114,6 +108,9 @@ let proctorCooldownUntil = 0;
 // AI FACE PROCTOR
 // ===============================
 
+let proctorFaceHudState = "checking";
+let proctorEyeHudState = "checking";
+
 function updateProctorHud(status, detail = "") {
     const hud = document.getElementById("proctorHud");
     const statusText = document.getElementById("proctorStatusText");
@@ -121,64 +118,46 @@ function updateProctorHud(status, detail = "") {
     const faceStatus = document.getElementById("proctorFaceStatus");
     const eyeStatus = document.getElementById("proctorEyeStatus");
     const bodyStatus = document.getElementById("proctorBodyStatus");
-
-    if (!hud || !statusText || !statusDot || !faceStatus) {
-        return;
-    }
-
+    if (!hud || !statusText || !statusDot || !faceStatus) return;
     hud.style.display = "flex";
 
     const labels = {
         initializing: "AI Proctor Starting...",
         active: "AI Proctor Active",
         "face-ok": "AI Proctor Active",
+        "head-ok": "AI Proctor Active",
+        "eyes-ok": "AI Proctor Active",
         "no-face": "Face Not Detected",
         "multiple-face": "Multiple Faces Detected",
-        "looking-away": "Please Face the Camera",
+        "head-away": "Please Face the Camera",
+        "gaze-away": "Please Keep Eyes on Screen",
         "ai-error": "AI Proctor Unavailable"
     };
-
     statusText.textContent = labels[status] || "AI Proctor Active";
     statusDot.className = "proctor-dot";
+    if (status === "active" || status === "face-ok" || status === "head-ok" || status === "eyes-ok") statusDot.classList.add("proctor-ok");
+    else if (status === "ai-error") statusDot.classList.add("proctor-error");
+    else statusDot.classList.add("proctor-warning");
 
-    if (status === "active" || status === "face-ok") {
-        statusDot.classList.add("proctor-ok");
-    } else if (status === "ai-error") {
-        statusDot.classList.add("proctor-error");
-    } else {
-        statusDot.classList.add("proctor-warning");
-    }
+    // Keep face and eye channels independent. A head warning must never
+    // overwrite the eye state, and an eye warning must never depend on head.
+    if (status === "no-face") proctorFaceHudState = "⚠ not detected";
+    else if (status === "multiple-face") proctorFaceHudState = "⚠ multiple";
+    else if (status === "head-away") proctorFaceHudState = "⚠ orientation";
+    else if (status === "head-ok" || status === "eyes-ok" || status === "gaze-away") proctorFaceHudState = "✓ detected";
+    else if (status === "face-ok" || status === "active") proctorFaceHudState = "✓ detected";
 
-    if (status === "face-ok") {
-        faceStatus.textContent = "Face: ✓ detected";
-    } else if (status === "multiple-face") {
-        faceStatus.textContent = "Face: ⚠ multiple";
-    } else if (status === "no-face") {
-        faceStatus.textContent = "Face: ⚠ not detected";
-    } else if (status === "looking-away") {
-        faceStatus.textContent = "Face: ⚠ orientation";
-    } else if (status === "gaze-away") {
-        faceStatus.textContent = "Face: ✓ detected";
-    } else {
-        faceStatus.textContent = detail || "Face: checking";
-    }
+    if (status === "gaze-away") proctorEyeHudState = "⚠ looking away";
+    else if (status === "eyes-ok" || status === "face-ok" || status === "active" || status === "head-ok") proctorEyeHudState = "✓ screen focus";
+    else if (status === "eyes-checking") proctorEyeHudState = "checking";
+    else if (status === "no-face") proctorEyeHudState = "⚠ face unavailable";
+
+    faceStatus.textContent = `Face: ${proctorFaceHudState}`;
+    if (eyeStatus) eyeStatus.textContent = `Eyes: ${proctorEyeHudState}`;
 
     if (bodyStatus) {
         if (status === "body-ok") bodyStatus.textContent = "Body: ✓ detected";
         else if (status === "body-move") bodyStatus.textContent = "Body: ⚠ movement";
-        else bodyStatus.textContent = "Body: checking";
-    }
-
-    if (eyeStatus) {
-        if (status === "gaze-away") {
-            eyeStatus.textContent = "Eyes: ⚠ looking away";
-        } else if (status === "face-ok") {
-            eyeStatus.textContent = "Eyes: ✓ screen focus";
-        } else if (status === "looking-away") {
-            eyeStatus.textContent = "Eyes: ⚠ head/gaze";
-        } else {
-            eyeStatus.textContent = "Eyes: checking";
-        }
     }
 }
 
@@ -648,7 +627,6 @@ function displayExam() {
     adaptiveEnabled = exam.adaptive === true;
     adaptiveBatchSize = Math.max(1, Number(exam.adaptiveBatchSize || 5));
     adaptiveCurrentBatch = exam.questions.slice(0, adaptiveBatchSize);
-    coreCheckTriggered = false;
 
     renderAdaptiveBatch(adaptiveCurrentBatch, 0);
     startTimer();
@@ -733,56 +711,7 @@ function saveAnswerById(questionId, optionId) {
     answers[String(questionId)] = String(optionId);
 }
 
-async function startCoreKnowledgeCheck() {
-    if (!examActive || coreCheckActive || coreCheckTriggered || !exam?.coreCheckEnabled) return false;
-    coreCheckActive = true;
-    coreCheckTriggered = true;
-    clearInterval(timerInterval);
-    timerInterval = null;
-    try {
-        const response = await fetch(`/api/exams/${encodeURIComponent(exam.id)}/core-check`, { method: "POST" });
-        const data = await response.json();
-        if (!response.ok || !data.success) throw new Error(data.error || "Could not load Core Knowledge Check.");
-        coreQuestions = data.questions || [];
-        coreAnswers = {};
-        coreRemainingSeconds = Number(data.durationSeconds || 60);
-        renderCoreKnowledgeCheck();
-        coreTimerInterval = setInterval(() => {
-            coreRemainingSeconds--;
-            const el = document.getElementById("coreTimer");
-            if (el) el.textContent = formatTime(Math.max(0, coreRemainingSeconds));
-            if (coreRemainingSeconds <= 0) finishCoreKnowledgeCheck();
-        }, 1000);
-        return true;
-    } catch (error) {
-        console.error(error);
-        coreCheckActive = false;
-        coreCheckTriggered = false;
-        startTimer();
-        alert(error.message || "Core Knowledge Check could not start.");
-        return false;
-    }
-}
-
-function renderCoreKnowledgeCheck() {
-    const area=document.getElementById("examArea"); if(!area) return;
-    area.innerHTML=`<div class="exam-header"><div class="exam-title-section"><h2>⭐ Core Knowledge Check</h2><p>10 fundamental questions · Your normal exam timer is paused</p></div><div id="coreTimer" class="exam-timer timer-danger">01:00</div></div><div class="adaptive-progress" style="margin:12px 0 18px;padding:14px 16px;border:1px solid #e5eaf1;border-radius:12px;background:#fff7ed;font-weight:700;">Answer these basic questions as quickly and accurately as you can. Minimum required: <strong>8 / 10</strong>.</div><div id="coreQuestions"></div><div class="submit-area" style="display:flex;justify-content:flex-end;"><button class="submit-exam-btn" onclick="finishCoreKnowledgeCheck()">Finish Core Check →</button></div>`;
-    const box=document.getElementById("coreQuestions");
-    coreQuestions.forEach((q,i)=>{ const opts=normalizeOptions(q); box.insertAdjacentHTML("beforeend",`<div class="examQuestion"><h3>${i+1}. ${escapeHtml(q.question||"Question unavailable")}</h3><div class="options-container">${opts.map((o,j)=>{const l=["A","B","C","D"][j]; return `<label class="option-label"><input type="radio" name="core${i}" value="${escapeHtml(o.id)}" onchange="saveCoreAnswer('${String(q.id).replace(/'/g,"\'")}','${String(o.id).replace(/'/g,"\'")}')"><span class="option-letter">${l}</span><span class="option-text">${escapeHtml(o.text)}</span></label>`}).join("")}</div></div>`); });
-}
-function saveCoreAnswer(qid,oid){ coreAnswers[String(qid)]=String(oid); }
-async function finishCoreKnowledgeCheck(){
-    if(!coreCheckActive) return;
-    coreCheckActive=false; clearInterval(coreTimerInterval); coreTimerInterval=null;
-    const completed=exam.questions.length;
-    alert("Core Knowledge Check completed. Your result will be shown separately and will not be added to your main exam score.");
-    startTimer();
-    if (completed < Number(exam.totalQuestionCount || 0)) {
-        await loadNextAdaptiveBatch(true);
-    }
-}
-
-async function loadNextAdaptiveBatch(forceAfterCore = false) {
+async function loadNextAdaptiveBatch() {
     if (!examActive || adaptiveWaitingForNext) return;
 
     const button = document.getElementById("nextAdaptiveBtn");
@@ -793,13 +722,6 @@ async function loadNextAdaptiveBatch(forceAfterCore = false) {
     }
 
     try {
-        const currentCompleted = exam.questions.length;
-        const triggerAt = Number(exam.coreCheckTriggerAt || Math.ceil(Number(exam.totalQuestionCount || 0) / 2));
-        if (!forceAfterCore && exam.coreCheckEnabled && !coreCheckTriggered && currentCompleted >= triggerAt && currentCompleted < Number(exam.totalQuestionCount || 0)) {
-            adaptiveWaitingForNext = false;
-            await startCoreKnowledgeCheck();
-            return;
-        }
         const currentIds = adaptiveCurrentBatch.map(q => q.id);
         const usedQuestionIds = exam.questions.map(q => q.id);
 
