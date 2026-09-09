@@ -174,9 +174,15 @@
         <br>
 
         <select id="questionBankSelect">
-            <option value="">
-                Loading question banks...
-            </option>
+            <option value="">Loading question banks...</option>
+        </select>
+
+        <br><br>
+
+        <label>Core Knowledge Question Bank <small>(optional, 10+ basic questions)</small></label>
+        <br>
+        <select id="coreQuestionBankSelect">
+            <option value="">No Core Knowledge Check</option>
         </select>
 
         <br><br>
@@ -240,11 +246,14 @@
             Upload a <strong>.txt</strong> file containing your questions.
         </p>
 
-        <input
-            type="file"
-            id="questionBankFile"
-            accept=".txt"
-        >
+        <label>Bank Type</label>
+        <br>
+        <select id="questionBankType">
+            <option value="normal">Normal Adaptive Question Bank</option>
+            <option value="core">Core Knowledge Question Bank</option>
+        </select>
+        <br><br>
+        <input type="file" id="questionBankFile" accept=".txt">
 
         <br><br>
 
@@ -353,7 +362,7 @@
       <div class="modal-stat"><span>Correct</span><strong id="modalCorrect">0</strong><small id="modalTotalLabel">of 0 questions</small></div>
       <div class="modal-stat"><span>Performance</span><strong id="modalPerformance">—</strong><small>overall result</small></div>
       <div class="modal-stat"><span>Submitted</span><strong id="modalSubmitted">—</strong><small>date &amp; time</small></div>
-      <div class="modal-stat"><span>Recording</span><strong id="modalRecording">Not available</strong><small>session evidence</small></div>
+      <div class="modal-stat"><span>Recording</span><strong id="modalRecording">Not available</strong><small>session evidence</small></div><div class="modal-stat"><span>Core Check</span><strong id="modalCore">—</strong><small>not included in score</small></div>
     </div>
     <div class="modal-insight"><div class="insight-icon">📈</div><div><strong>Student performance</strong><p id="modalInsightText">Performance history is available in Results.</p></div><button id="modalGraphButton" class="ghost-action" onclick="openPerformanceFromModal()">View graph</button></div>
     <div class="modal-actions"><a id="modalVideo" class="primary-action" href="#" target="_blank" rel="noopener" style="display:none;text-decoration:none;">🎥 Watch Recording</a><button class="secondary-action modal-close-action" onclick="closeAttemptModal()">Close</button></div>
@@ -477,7 +486,8 @@ async function createExam() {
                     title,
                     duration,
                     bankId,
-                    questionCount
+                    questionCount,
+                    coreBankId: document.getElementById("coreQuestionBankSelect").value || null
                 })
             });
 
@@ -608,57 +618,21 @@ async function deleteExam(id, title) {
 }
 
 async function loadQuestionBankOptions() {
-
-    const select =
-        document.getElementById("questionBankSelect");
-
+    const select = document.getElementById("questionBankSelect");
+    const coreSelect = document.getElementById("coreQuestionBankSelect");
     try {
-
-        const response =
-            await fetch("/api/question-banks");
-
-        const data =
-            await response.json();
-
-        if (!data.success) {
-
-            select.innerHTML =
-                `<option value="">Could not load question banks</option>`;
-
-            return;
-        }
-
-        if (data.banks.length === 0) {
-
-            select.innerHTML =
-                `<option value="">No question banks available</option>`;
-
-            return;
-        }
-
-        select.innerHTML =
-            `<option value="">Select a question bank</option>`;
-
-        data.banks.forEach(bank => {
-
-            const option =
-                document.createElement("option");
-
-            option.value = bank.id;
-
-            option.textContent =
-                `${bank.name} (${bank.questionCount} questions)`;
-
-            select.appendChild(option);
-
-        });
-
+        const response = await fetch("/api/question-banks");
+        const data = await response.json();
+        if (!data.success) throw new Error(data.error || "Could not load question banks.");
+        const normal = (data.banks || []).filter(b => (b.bankType || "normal") === "normal");
+        const core = (data.banks || []).filter(b => b.bankType === "core");
+        select.innerHTML = normal.length ? '<option value="">Select a question bank</option>' : '<option value="">No normal question banks available</option>';
+        normal.forEach(bank => { const o=document.createElement("option"); o.value=bank.id; o.textContent=`${bank.name} (${bank.questionCount} questions)`; select.appendChild(o); });
+        if (coreSelect) { coreSelect.innerHTML = '<option value="">No Core Knowledge Check</option>'; core.forEach(bank => { const o=document.createElement("option"); o.value=bank.id; o.textContent=`${bank.name} (${bank.questionCount} questions)`; coreSelect.appendChild(o); }); }
     } catch (error) {
-
         console.error(error);
-
-        select.innerHTML =
-            `<option value="">Could not connect to server</option>`;
+        select.innerHTML = '<option value="">Could not connect to server</option>';
+        if (coreSelect) coreSelect.innerHTML = '<option value="">Could not load core banks</option>';
     }
 }
 async function uploadQuestionBank() {
@@ -685,10 +659,8 @@ async function uploadQuestionBank() {
 
     const formData = new FormData();
 
-    formData.append(
-        "questionBank",
-        file
-    );
+    formData.append("questionBank", file);
+    formData.append("bankType", document.getElementById("questionBankType")?.value || "normal");
 
     message.textContent =
         "Uploading...";
@@ -777,7 +749,7 @@ async function loadQuestionBanks() {
 
                     <div>
                         <h3>${bank.name}</h3>
-                        <p>Question Bank</p>
+                        <p>${bank.bankType === "core" ? "⭐ Core Knowledge Bank" : "Adaptive Question Bank"}</p>
                     </div>
 
                 </div>
@@ -884,7 +856,7 @@ async function loadAdminResults() {
 function renderAdminResults(results) {
   const list=document.getElementById('resultsList');
   if(!results.length){ list.innerHTML='<div class="dashboard-panel empty-panel"><div class="empty-icon">📊</div><h3>No student results yet</h3><p>Results will appear automatically after a student submits an exam.</p></div>'; return; }
-  list.innerHTML=`<div class="results-header"><span>Student</span><span>Exam</span><span>Score</span><span>Status</span><span>Action</span></div>`+
+  list.innerHTML=`<div class="results-header"><span>Student</span><span>Exam</span><span>Score</span><span>Core Check</span><span>Status</span><span>Action</span></div>`+
     results.map(r=>`<div class="results-row admin-result-row">
       <span><strong>${escapeHtml(r.studentName)}</strong><small>${escapeHtml(r.studentCode)}</small></span>
       <span>${escapeHtml(r.examTitle)}<small>${new Date(r.submittedAt).toLocaleString()}</small></span>
@@ -928,7 +900,7 @@ async function viewAdminAttempt(id) {
     document.getElementById('modalPerformance').textContent=r.percentage>=80?'Excellent':r.percentage>=60?'Strong':r.percentage>=50?'Developing':'Needs Practice';
     const submitted = r.submittedAt ? new Date(r.submittedAt) : null;
     document.getElementById('modalSubmitted').textContent=submitted ? submitted.toLocaleDateString([], {day:'2-digit',month:'short',year:'numeric'}) : '—';
-    document.getElementById('modalRecording').textContent=r.videoUrl?'Available':'Not available';
+    document.getElementById('modalRecording').textContent=r.videoUrl?'Available':'Not available'; document.getElementById('modalCore').textContent=r.coreTotal ? `${r.coreScore ?? 0}/${r.coreTotal} ${r.corePassed ? '✓' : '⚠️'}` : '—';
     document.getElementById('modalStatusPill').textContent=r.status==='completed'?'Completed':'Terminated';
     document.getElementById('modalInsightText').textContent = r.videoUrl ? 'A recording is attached to this assessment. You can review the student session before evaluating the result.' : 'Open the performance graph to compare this assessment with the student’s other results.';
     const video=document.getElementById('modalVideo');
